@@ -1,0 +1,24 @@
+{\
+'impath' : '/science/fbianco/iXondata/',\
+'imdir' : './',\
+'spool':'tmp-q_e_20120101_50_1_1_0.fits',\
+#p_e_20110626_15_1_1_0.fits',\
+'dodark' : 2,\
+'darkplace' : '/data/reduced/',\
+'dark' : 'tmp-q_d_20120101_59_0_1_0.fits',\
+#'p_d_20110626_7_0_1_0.fits',\
+'target':1,\
+'last' :  9000,\
+'coords' : 'coord.txt',\
+'ap' : [5,6,7,8,9,10,11,12,13,14,15,17,20,25],\
+				  #4,5,6,7,9,10,13],\
+				  #allowed values: 
+                                  #25 35 45 50 55 60
+'centroid' : 'dynamic',\
+'unspool' : 'n',\
+'myapphot': 'y',\
+'cosmic' : 'n',\
+'sextract' : 'n',\
+'phot' : 'n',\
+'createlc' : 'n'\
+}

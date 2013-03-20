@@ -1,0 +1,65 @@
+K 25
+svn:wc:ra_dav:version-url
+V 44
+/svn/user/!svn/ver/20862/fbianco/LIHSPcommon
+END
+default.sex
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/user/!svn/ver/19378/fbianco/LIHSPcommon/default.sex
+END
+default.param
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/user/!svn/ver/19283/fbianco/LIHSPcommon/default.param
+END
+mdark.py
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/user/!svn/ver/20862/fbianco/LIHSPcommon/mdark.py
+END
+myioutils.py
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/user/!svn/ver/21704/fbianco/LIHSPcommon/myioutils.py
+END
+unspool.py
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/user/!svn/ver/21704/fbianco/LIHSPcommon/unspool.py
+END
+LIHSPautorecude.py
+K 25
+svn:wc:ra_dav:version-url
+V 63
+/svn/user/!svn/ver/20286/fbianco/LIHSPcommon/LIHSPautorecude.py
+END
+cosmics.py
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/user/!svn/ver/19172/fbianco/LIHSPcommon/cosmics.py
+END
+runcosmic.py
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/user/!svn/ver/19172/fbianco/LIHSPcommon/runcosmic.py
+END
+mysciutils.py
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/user/!svn/ver/20656/fbianco/LIHSPcommon/mysciutils.py
+END
+myutils.py
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/user/!svn/ver/21704/fbianco/LIHSPcommon/myutils.py
+END

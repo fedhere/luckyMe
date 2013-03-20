@@ -1,0 +1,53 @@
+K 25
+svn:wc:ra_dav:version-url
+V 40
+/svn/user/!svn/ver/19194/fbianco/HSPpipe
+END
+config.txt
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/user/!svn/ver/19165/fbianco/HSPpipe/config.txt
+END
+config00.txt
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/user/!svn/ver/19057/fbianco/HSPpipe/config00.txt
+END
+coord.txt
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/user/!svn/ver/19138/fbianco/HSPpipe/coord.txt
+END
+coord00.txt
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/user/!svn/ver/19057/fbianco/HSPpipe/coord00.txt
+END
+grabconfig.py
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/user/!svn/ver/19057/fbianco/HSPpipe/grabconfig.py
+END
+myapphot.py
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/user/!svn/ver/19165/fbianco/HSPpipe/myapphot.py
+END
+callall.py
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/user/!svn/ver/20066/fbianco/HSPpipe/callall.py
+END
+binandsmooth.py
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/user/!svn/ver/19194/fbianco/HSPpipe/binandsmooth.py
+END

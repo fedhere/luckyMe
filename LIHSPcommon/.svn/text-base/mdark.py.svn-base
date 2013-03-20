@@ -1,0 +1,88 @@
+import pyfits as PF
+import sys
+import os
+from numpy import *
+from scipy import *
+
+#inpath: filepath of input dark spool
+#inname: filename of input dark spool
+#method: avg med clip[,kappa]
+#outpath: filepath of masterdark
+#makefits: 1 prints masterdark to .fits
+
+
+def rdark(filepath,filename):
+    
+    filein = filepath + '/' + filename
+    if filename.find('mstrdrk') < 0:
+        if filename.endswith('.fits'):
+            filename=filename[:-5]
+        filein=filepath+'/'+filename+'_mstrdrk.fits'
+    dark=PF.open(filein)
+    return dark[0].data
+
+def mkdark(inpath,filename,method,makefits,outpath):
+
+#####     ARGUMENTS     #####
+
+    dark=PF.open(inpath+'/'+filename)
+    cube=dark[0].data
+    header=dark[0].header
+    nimages=len(cube)
+    xarray=dark[0].header['NAXIS1']
+    yarray=dark[0].header['NAXIS2']
+    mode=method.split(',')[0]
+    masterdata=zeros((yarray,xarray),int)
+    print makefits
+#####     AVERAGE     #####
+    
+    if mode=='avg':
+        print 'Taking average...'
+        header.update('METHOD','AVERAGE','Method of frame combination')
+        header.update('FRMTYPE','DARK')
+
+        masterdata=cube.mean(axis=0)
+        header.update('NIMAGES',nimages,'Number of images combined',after='METHOD')
+
+#####     MEDIAN     #####
+
+    elif mode=='med':
+        print 'Taking median...'
+        header.update('METHOD','MEDIAN','Method of frame combination',before='HEAD')
+        masterdata=median(cube, axis=0)
+        header.update('NIMAGES',nimages,'Number of images combined',after='METHOD')
+
+#####     MEDIAN WITH CLIPPING     #####
+
+    elif mode=='clip':
+        print 'Taking median with kappa-sigma clipping...'
+        header.update('FRMTYPE','FLAT')
+        header.update('METHOD','SIG-CLIP MED','Method of frame combination',before='HEAD', after="FRMTYPE")
+        sig=std(cube, axis=0)
+        mn=cube.mean(axis=0)
+        kap=3
+	masterdata=zeros((yarray,xarray), float)
+        if len(method)==2:kap=int(method.split(',')[1])
+        for i in range(yarray):
+            for j in range(xarray):
+                maskhi=cube[:,i,j]>(mn[i,j]-kap*sig[i,j])
+                masklo=cube[:,i,j]<(mn[i,j]+kap*sig[i,j])
+                masterdata[i,j]=median(cube[maskhi&masklo,i,j])
+	
+        header.update('CLIPPING',kap,'Kappa coefficient of clipping',after='METHOD')
+    else:
+        print "UNRECOGNIZED DARK MANIPULATION MODE: allowed modes are avg, med, clip. try python unspool.py -h for help"
+        return -1
+#####     WRITE MASTERDARK TO .FITS     #####
+
+    if int(makefits)==2:
+        print 'printing'
+    	if filename.endswith('.fits'):
+            filename=filename[:-5]
+        fileout=outpath+'/'+filename+'_mstrdrk.fits'
+        if os.path.isfile(fileout):
+            os.remove(fileout)
+        PF.writeto(fileout, masterdata, header)               #creates master.fits at fileout
+        print 'Master dark written to %s' % fileout
+    
+    return masterdata

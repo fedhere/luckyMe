@@ -1,0 +1,233 @@
+#######################################################################
+############unspool.py written by dkudrow 08/2010#######################
+#takes 2 default lucapun output "spool" fits files
+#compiles master from dark spool
+#splits observation spool and darksubtracts each image
+#with individual header information
+#type $python unspool.py -h for help
+####
+#last modified 08/12/2010
+########################################################################
+
+import sys
+import os
+from numpy import *
+from scipy import *
+from scipy import ndimage
+import pyfits as PF
+import mdark
+import mflat
+from myutils import mygetenv,readconfig, mymkdir, mjd
+from mysciutils import drizzle
+SECINDAY=1.15740741e-5
+SQUARE=0
+MASK=False 
+
+def unspoolit(inpath,spoolname,drkpath,drkname,drkmeth,drkprint, drkout, outpath,rotangle,flatten,flats):
+
+   print inpath+'/'+spoolname
+   spool=PF.open(inpath+'/'+spoolname)
+   print spool
+   frames=spool[0].data
+   hdr=spool[0].header
+   nframes=len(frames)
+
+   ysize=hdr['NAXIS1']
+   xsize=hdr['NAXIS2']
+   if 'NAXIS3' in hdr:
+      zsize=hdr['NAXIS3']
+   else :
+      zsize = 1
+
+   if zsize <=1:
+      print "this is not a spool! there are ",zsize," images in the spool" 
+
+   if 'SUBRECT' in hdr:
+        subframe=hdr['SUBRECT']
+        sframe = []
+        for i in subframe.split():
+                sframe.append(int(i.replace(',','').strip()))
+        del hdr['SUBRECT']
+        subframecomment = 'subframed image. orignial subframe: %s'%subframe
+        hdr.update('COMMENT','%s' %subframecomment)
+   else:
+        sframe = [1,xsize,ysize,1]
+   if 'MJD' in hdr:
+      tstart = float(hdr['MJD'])
+   elif 'FRAME' in hdr:
+      tmpdate = hdr['FRAME']
+      year = int(tmpdate[0:4])
+      month = int(tmpdate[5:7])
+      day = int(tmpdate[8:10])    
+      hour = float(tmpdate[11:13])/24.0
+      minute = float(tmpdate[14:16])/1440.0
+      second = float(tmpdate[17:])/86400
+      
+        
+      tstart=mjd(year,month,day)+hour+minute+second#-0.5
+#      print tstart
+  #    sys.exit()
+   try:
+      exposure = float(hdr['EXPTIME'])
+   except:
+      exposure = float(hdr['EXPOSURE'])
+   if 'KCT' in hdr:
+      cadence = 1.0/float(hdr['KCT'])
+                       
+   elif 'FRMINTVL' in hdr:
+      cadence = 1.0/float(hdr['FRMINTVL'])
+      print "cadence: ",cadence
+   else: 
+      cadence = 1.0/exposure
+      
+
+#print sframe 
+   if sframe != [1,xsize,ysize,1]:
+       print 'subframed image, removing keyword and adding comment to header to comply with mira standards'
+
+   masterdark=0
+
+#####     COMPILE DARK     #####
+
+   if drkprint == 0:
+      print 'No dark subtraction...\n\n'
+      masterdark=zeros((xsize,ysize),float)
+   elif drkprint == 3:
+      print 'Reading master dark %s/%s...\n\n'%(drkout,drkname)
+      masterdark, dexposure = mdark.rdark(drkout,drkname)
+      if dexposure == 0:
+         print "reading master dark failed"
+         return  -1
+      elif dexposure != exposure:
+         print "mismatched exposure between science images and dark"
+         return -1         
+   else:
+      print 'Compiling master dark...\n\n'
+      masterdark=mdark.mkdark(drkpath,drkname,drkmeth,drkprint,drkout)
+
+
+####      FLATTEN     #####
+   if flatten:
+      heredir=mygetenv('SPEEDYOUT')+'/flats/'
+      if mymkdir(heredir)!= 0:
+         sys.exit()
+         #    strg = 'mkdir mygetenv('SPEEDYOUT')//darks'
+         #    os.system(strg)
+      masterflat=mflat.mkflat(drkpath,flats,masterdark,dexposure,heredir)
+   else:
+      masterflat=ones(masterdark.shape,float)
+
+####      MASK        #####
+   if MASK:
+      maskname = drkout+'/'+drkname.replace('.fits','')+'_mask.fits'
+      if os.path.isfile(maskname):
+         mask=PF.getdata(maskname)
+
+#####     UNSPOOL     #####
+   print 'Unspooling ', zsize,spoolname, ' frames...\n\n'
+
+   for i in range(nframes):
+      if 'MJD' in hdr:
+         hdr['MJD'] = tstart+cadence*i*SECINDAY
+      else:
+         hdr.update('MJD', '%f' %float(tstart+cadence*i*SECINDAY))
+      if spoolname.endswith('.fits'):
+         spoolname=spoolname[:-5]
+      spoolname.replace('.fits','')
+      filepath=outpath+'/unspooled/'+spoolname+'_%05d.fits' % i
+      filepathmask=outpath+'/unspooled/'+spoolname+'_mask_%05d.fits' % i
+      if MASK:
+         if os.path.isfile(filepathmask):
+            print "\n\n\nunspooled files already exist (%s). remove them first\n\n\n"%filepathmask
+            return -1
+      else:
+         if os.path.isfile(filepath):
+            print "\n\n\nunspooled files already exist (%s). remove them first\n\n\n"%filepath
+            return -1
+      frames[i]-=masterdark
+      
+      frames[i]*=2*masterflat
+      #rotangle = 22
+      frames[i] = ndimage.rotate(frames[i],rotangle,reshape=False)
+      if SQUARE:
+         if xsize < ysize:
+            ymin = int(ysize/2-xsize/2)
+            ymax = ymin+xsize
+		#print frames[i].shape, ymax-ymin   
+            framehere = frames[i][:,ymin:ymax]
+		#print framehere.shape
+         else: framehere = frames[i]
+      else: framehere = frames[i]
+      if MASK:
+         framehere=frames[i]*mask
+         PF.writeto(filepathmask, framehere, hdr)
+      else:
+         PF.writeto(filepath, framehere, hdr)
+
+   return(1)
+#########################################################
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2 or sys.argv[1].startswith('-h') or sys.argv[1] == 'h':
+        print """Usage. Requires: 
+                **name of parameter file conatining :**
+                
+                Directory containing images
+            	dark file
+		dark method
+		"""
+    	sys.exit()
+
+
+#####     DECLARE VARIABLES     #####
+    par = readconfig(sys.argv[1])
+    print par
+    inpath=par['impath']+'/'+par['imdir']+'/'
+    
+    nameroot=par['spool'][0]
+    if nameroot.endswith('.fits'):
+        nameroot = nameroot[:-5]
+
+    speedyout=mygetenv('SPEEDYOUT')
+
+    if len(par['spool'])>1: 
+        outpath = '%s/%s_all'%(speedyout,nameroot)
+    else:
+        outpath = '%s/%s'%(speedyout,nameroot)
+
+    print 'creating ',outpath
+
+    if mymkdir(outpath)!= 0:
+        sys.exit()
+
+    heredir=speedyout+'/darks/'
+    if mymkdir(heredir)!= 0:
+        sys.exit()
+
+
+
+    print 'creating ',outpath+'/unspooled'
+
+    if mymkdir(outpath+'/unspooled')!= 0:
+        sys.exit()
+
+    
+    #strg = 'mkdir mygetenv('SPEEDYOUT')//darks'
+    #os.system(strg)
+
+    dodarks = [par['dodark']]
+    flatten=0
+    if par['flatten'].startswith('y'):
+        flatten=1
+    for i in range(1,len(par['spool'])):
+        if dodarks[0] == 3 or dodarks[0] == 0:
+                dodarks.append(dodarks[0])
+        else:
+                dodarks.append(2)
+
+	
+    for  i,img in enumerate(par['spool']):
+        fname = '%s/%s/%s'%(par['impath'],par['imdir'],  img)
+        if os.path.isfile(fname):
+		unspoolit(inpath, img, inpath,par['dark'],'avg', dodarks[i] ,  mygetenv('SPEEDYOUT')+'/darks',outpath, flatten,par['flats'])

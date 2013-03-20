@@ -1,0 +1,25 @@
+{\
+'impath' : '/archive/science/coj/fts/en01/20110613',\
+'imdir' : './',\
+'spool' : 'p_e_20110612_14_1_1_0.fits',\
+                                #directory containing unspooled images
+                                #Guide star x coordinate
+'dodark' : 0,\
+                                 #
+'darkplace' : '/home/fbianco/LIHSPtesting/images/',
+'dark' : 'tmp-q_d_20110601_56_0_1_0.fits',\
+                                 #
+'last' :  9999,\
+#
+'coords' : 'coord00.txt',\
+'ap' : 50,\
+				  #allowed values: 
+                                  #25 35 45 50 55 60
+'centroid' : 'static',\
+'unspool' : 'n',\
+'cosmic' : 'n',\
+'sextract' : 'n',\
+'phot' : 'n',\
+'createlc' : 'n',\
+'myapphot': 'y'\
+}

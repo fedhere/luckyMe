@@ -1,0 +1,719 @@
+#################################################################
+###############written by fbb, dkudrow, shillberry########################
+#Reads all of the images in a directory, sorts them by Strehl
+#Ratio or consecutive order, and stacks the specified top percent
+#either aligned to a guide star, correlating in fourier space, 
+#or not aligning, weighting if requested.
+#This version includes: 
+#detripling for compact binaries, drizzle algorithm for 
+#subpixel alignment  and dynamic guide region.
+#Type $python stacked.py -h for usage
+####
+#last modified 11/14/2011
+#################################################################
+
+
+print 'Initializing stacking sequence...'
+
+import sys,os,time
+import pyfits as PF
+from numpy import *
+from scipy import *
+from scipy.interpolate import interp1d
+from scipy.fftpack import fftn, ifftn
+import threading
+from pylab import plt, axvline, savefig, subplot,  figure, plot, legend, title, hist, imshow, show
+sys.path.append("../LIHSPcommon")
+from myutils import readconfig, mygetenv
+from myioutils import *
+from mysciutils import *
+
+
+print 'Loaded all packages'
+DEBUG = False
+#DEBUG = True
+
+def preppars(file0,inpath, hd):
+        
+#####     HEADER INFO     #####
+            
+    try: image=PF.open(inpath+'/'+file0)
+    except:
+        print "image could not be open %s/%s"%(inpath,file0)
+        return -1
+
+    header=image[0].header
+    image.close()
+
+    hd['xsize']=header['NAXIS1']
+    hd['ysize']=header['NAXIS2']
+    
+    if  'HBIN' in header:
+        hd['hbin']=float(header['HBIN'])
+        hd['vbin']=float(header['VBIN'])
+    elif 'CCDXBIN' in header:
+        hd['hbin']=float(header['CCDXBIN'])
+        hd['vbin']=float(header['CCDYBIN'])
+    if 'EXPOSURE' in header:
+        hd['exp']=  (header['EXPOSURE'])
+    elif 'EXPTIME' in header:
+        hd['exp']=  (header['EXPTIME'])
+    else:
+        print "no exposure length recognizable key!" 
+        return -1
+    if 'SATURATE' in header:
+         hd['saturation']=header['SATURATE']
+    hd['filename']=file0[:-9].replace('.fits','')
+
+
+    return hd, header
+
+####################################################################3
+
+def add2stack(dx,dy,stack,newfits, w):
+    limx1=[0,newfits.shape[0]] #min x value of fits
+    limx2=[0,newfits.shape[1]] #min y value of fits
+    limy1=[0,newfits.shape[0]] #min x value of fits
+    limy2=[0,newfits.shape[1]] #min y value of fits
+
+    if dx < 0:
+        limx1[0]=-dx
+        limx2[1]=dx
+    elif dx > 0:
+        limx2[0]=dx
+        limx1[1]=-dx
+
+    if dy < 0:
+        limy1[0]=-dy
+        limy2[1]=dy
+    elif dy > 0:
+        limy2[0]=dy
+        limy1[1]=-dy
+
+
+
+    stack[limx1[0]:limx1[1],limy1[0]:limy1[1]] += w*newfits[limx2[0]:limx2[1],limy2[0]:limy2[1]]
+
+####################################################################3
+
+def updatecentroid(bp,maxindex,name, hd):
+    bpx = bp[0]
+    bpy = bp[1]
+    rad = hd['rad']
+
+    newbpx=bpx+maxindex[1][0]-rad
+    newbpy=bpy+maxindex[0][0]-rad
+
+    if (newbpx-bpx)*(newbpx-bpx)<hd['psxsq'] and (newbpy-bpy)*(newbpy-bpy)<hd['psysq'] and \
+            (newbpx-2*rad > 0 and newbpx+2*rad < hd['xsize'] \
+            and newbpy-2*rad > 0 and newbpy+2*rad < hd['ysize'] \
+            and (bpx-newbpx)*(bpx-newbpx) < rad*rad/4.0 \
+            and (bpy-newbpy)*(bpy-newbpy) < rad*rad/4.0)  :
+
+        return newbpx,newbpy
+        
+    else:
+        print '''Cannot update centroid cause it is outside 
+of the allowed region, if this is common choose 
+another star or shrink the search region radius ''',name
+
+        return (bpx,bpy)
+
+def findbright(inpath, name, bp, hd, best, follow, nrej):
+    tmpfile=PF.open(inpath+'/'+name)
+#    data = tmpfile[0].data
+    data = drizzle(tmpfile[0].data, 0) #NOTE: is this wrong?#
+    rad=hd['rad']
+    reg=data[bp[1]-rad:bp[1]+rad+1,bp[0]-rad:bp[0]+rad+1]
+    
+    t = threading.Thread(target=findbrightest, args=(reg, name, hd, bp,data, best, follow, nrej))
+    
+    t.daemon = True
+    t.start()
+    tmpfile.close()
+    return nrej
+
+def findbrightest(reg, name, hd, bp, fits, best, follow, nrej):
+    bpx = bp[0]
+    bpy = bp[1]
+    rad = hd['rad']
+    satlevel=hd['saturation']
+    maxvalue =reg.max()
+    if maxvalue<satlevel:
+        maxindex =where(reg==reg.max())
+        if DEBUG:
+            print """
+            
+
+                  printint maxindev, maxvalue
+
+
+                  """
+            print maxindex, reg.max()
+
+        if len(maxindex[0]) ==1: 
+            (mx,my,apf) =calccents(\
+            array(fits[bpy-rad+maxindex[0][0]-rad:\
+                                   bpy-rad+maxindex[0][0]+rad+1,\
+                                   bpx-rad+maxindex[1][0]-rad:\
+                                   bpx-rad+maxindex[1][0]+rad+1]))
+            if DEBUG:
+                figure()
+
+                imshow( fits[bpy-rad+maxindex[0][0]-2*rad:\
+                                         bpy-rad+maxindex[0][0]+2*rad+1,\
+                                         bpx-rad+maxindex[1][0]-2*rad:\
+                                         bpx-rad+maxindex[1][0]+2*rad+1])
+                show()
+                
+            best.append([name,
+                         maxindex[1],
+                         maxindex[0],
+                         maxvalue,
+                         int(bpx),
+                         int(bpy),
+                         bpx+maxindex[1][0]-2*rad+mx, 
+                         bpy+maxindex[0][0]-2*rad+my, apf])
+	    l = best[-1]
+	    #print '%s %d %d %f %d %d %f %f %f\n'\
+		#%(l[0],l[1],l[2],l[3],int(l[4]+l[1])-rad,
+                 #   int(l[5]+l[2])-rad,l[6],l[7],l[8])
+            if DEBUG:
+                print best[-1]
+            if follow=='dynamic':  #TO BE CHECKED
+		bp=updatecentroid(bp,maxindex,name,hd)
+                                
+        else:
+            print 'Repeat brightest pixel found in %s. Frame skipped.' % name
+            nrej+=1
+    else:
+        print 'Saturated  pixel found in %s. Frame skipped.' % name
+        nrej+=1
+
+def orderbystrehl(imdef, files, listfilename, hd, inpath):
+    best=[]
+    gsx = hd['gsx']
+    gsy = hd['gsy']
+    rad = hd['rad']
+    nrejected0=0
+    nrejected=0
+    nfiles = len(files)
+    if imdef['imtype'] == 'CONSEC' and imdef['align'] == 'UNALIGN':
+        #consecutive analigned, not ordering
+        for name in files:
+            best.append([name,0,0,0,
+                         gsx,gsy,gsx,gsy, 0])
+
+
+    else: #aligned lucky or weighted: strehl ratio file needed 
+        print '#Evaluating %s images...' % nfiles
+        sys.stdout.flush()
+        if os.path.isfile(listfilename) == True:
+            #file exists, reading it out
+            print 'reading list of strehl sorted files'
+            listfile = open(listfilename)
+            sys.stdout.flush()
+
+            lsplit=listfile.readline().split()
+            if len(lsplit)<9:
+                print 'old version of strehl ratio file. remove ', listfilename, 'first and rerun reduction.'
+                return -1
+            best.append([lsplit[0], int(lsplit[1]), int(lsplit[2]), 
+                         float(lsplit[3]), 
+                         int(lsplit[4]), int(lsplit[5]),
+                         float(lsplit[6]), float(lsplit[7]),
+                         float(lsplit[8])])
+            for l in listfile:
+                lsplit=l.split()
+                best.append([lsplit[0], int(lsplit[1]), int(lsplit[2]), 
+                             float(lsplit[3]), 
+                             int(lsplit[4]), int(lsplit[5]),
+                             float(lsplit[6]), float(lsplit[7]),
+                             float(lsplit[8])])
+                    
+        else: #creating a strehl ratio
+            print "creating strehl ratio"
+            bp=(gsx,gsy)
+            name = files[0]
+            tmpfile=PF.open(inpath+'/'+name)
+	    #data = tmpfile[0].data
+	    data = drizzle(tmpfile[0].data, 0) #NOTE: does this work?#
+            nrejected0=0
+            reg=data[bp[1]-rad:bp[1]+rad+1,bp[0]-rad:bp[0]+rad+1]
+
+            if DEBUG:
+                figure()
+                imshow(reg)
+#                show()
+
+            findbrightest(reg,  name, hd, bp,data, best, imdef['follow'], nrejected0) 
+
+            for name in files[1:]:
+                #if len(best) == 1:
+                    #printreg(name,imdef['follow'],inpath, best,rad, bp,'red')
+
+                findbright(inpath, name, bp, hd, best, imdef['follow'], nrejected0)
+                    
+##########PRINTING STREHL LIST######################
+            print 'printing list of selected images to '+listfilename
+            sys.stdout.flush()
+            
+            listout=open(listfilename,'w')
+               
+            if imdef['imtype'] !='CONSEC':
+                best=sorted(best,key=lambda list:list[3] ,reverse=True)
+            else :
+                best=sorted(best,key=lambda list:list[0] ,reverse=False)
+            for l in best:
+                strhere = '%s %d %d %f %d %d %f %f %f\n'%(
+                    l[0],l[1],l[2],l[3],int(l[4]+l[1])-rad,
+                    int(l[5]+l[2])-rad,l[6],l[7],l[8])
+
+                listout.write(strhere)
+            listout.close()
+    return best, nrejected0
+
+def corrcoadd(luckies, inpath, coff, header, pc, hd, outfiles, weights, imdef, fast):
+
+    if fast:
+	sys.path.append("../../Downloads/PyFFTW3-0.2.1/build/lib") 
+	   ##path to PyFFTW3##
+	import fftw3 
+	print 'Using Fast Fourier Transforms of the West package ...'
+
+    try: masterdata = PF.getdata(inpath+'/'+luckies[0][0])
+    except:
+        print """Cannot find image %s\nAborting...""" %(inpath+'/'+luckies[0][0])
+        return -1    
+    mcoff=max(coff)
+
+    phasedata = open('/science/shillberry/LIdata/tmp-q_e_20110829_23_1_1_0_all/phase_correlation.dat','w')
+    phasedata.write('Masterfits: ' + luckies[0][0]+'\n')
+
+    masterdata = drizzle(masterdata, 0)
+    _PAD_ = 50
+    stack = pad(masterdata, _PAD_)
+############ TUKEY WINDOW MASTER #####
+    alpha = 0.6
+    if DEBUG: print "alpha = %f" %alpha
+    tukey = tukey2d(masterdata.shape, alpha)
+    padding =  _PAD_
+    tukeypad = pad(tukey, padding)
+   
+    if fast:
+	temp = np.array(stack*tukeypad, complex)
+        masterfft = np.zeros(temp.shape, complex)
+        masterplan = fftw3.Plan(temp, masterfft, 'forward')
+        masterplan.execute()
+    else:
+        masterfft = fftn(stack*tukeypad)
+
+    pcn=0
+    exposure = 0.0
+    cumm_shift, temp_cumm = 0.0,0.0 #cumulative shift for averaging
+    naxis2 = stack.shape[0]
+    naxis1 = stack.shape[1]
+
+    for k in xrange(1,mcoff):
+        if select == 'weighted':
+            w=weights[k]
+        else:
+            w=1.0
+
+        name = luckies[k][0]
+        fits = PF.getdata(inpath+'/'+name)
+        
+        fits = drizzle(fits, 0)
+        fitspad = pad(fits, _PAD_)
+        
+        tukey = tukey2d(fits.shape, alpha)
+        tukeypad = pad(tukey, padding)
+        
+	if fast:
+	    temp = np.array(fitspad*tukeypad, complex)
+            fitsfft = np.zeros(temp.shape, complex)
+            fitsplan = fftw3.Plan(temp, fitsfft, 'forward')
+            fitsplan.execute()
+	else:
+	    fitsfft = fftn(fitspad*tukeypad)
+
+############## FINDING PHASE ############
+        axis2_shift, axis1_shift = correlate([masterfft, fitsfft], DEBUG)
+
+        if DEBUG: 
+            print 'Running %d/%d' %(k, mcoff-1)
+	    print '\n... ' + name + '\n' + \
+		  'Finding phase...\n' + \
+	          '...shift in NAXIS1 = ' +str(int(axis1_shift))+ '\n' + \
+                  '...shift in NAXIS2 = ' +str(int(axis2_shift))
+
+	dist = np.sqrt(float(axis2_shift)**2 + float(axis1_shift)**2)
+	cum_shift += dist
+        avg_shift = cum_shift/k
+        if dist == 0 and avg_shift >= 3:
+            print 'WARNING!! ' + name + ' found zero shift.   ' +\
+                    'average shift = %s' %str(avg_shift)
+
+            i = 1
+            while  (abs(axis2_shift) > radius or abs(axis1_shift) > radius) and i < len(maxtab):
+                phase = maxtab[i][0]
+                if DEBUG: print "phase = " + str(phase)
+
+### Checks if image has negative shift ### 
+                if phase[0] > naxis2/2:
+                    axis2_shift =  phase[0] - naxis2
+                else:
+                    axis2_shift = phase[0]
+
+                if phase[1] > naxis1/2:
+                    axis1_shift = phase[1] - naxis1
+                else:
+                    axis1_shift = phase[1]
+
+                i+=1
+
+            if DEBUG: 
+	        print "...shift in NAXIS1 = %d"  %axis1_shift
+                print "...shift in NAXIS2 = %d"  %axis2_shift
+
+
+            if abs(axis2_shift) > radius or abs(axis1_shift) > radius:
+                print 'No good correlation found for '+name+ ' ... Omitting frame'
+                _OMIT_ = True
+
+        dist = np.sqrt(float(axis2_shift)**2 + float(axis1_shift)**2)
+
+        if not _OMIT_:
+            phasedata.write(luckies[k][0] + '    ( %d , %d )\n' %(axis2_shift, axis1_shift))
+            temp_cumm += dist
+            temp_avg = temp_cumm/k
+
+            if dist >= 3*temp_avg:
+                print 'WARNING!! ' + name + ' found large shift.\
+                    shift = [%d, %d]' %(axis2_shift, axis1_shift)
+                _OMIT_ = True
+		cumm_shift += dist
+
+            avg_shift = cumm_shift/k
+            if dist == 0 and avg_shift >= 3:
+                print 'WARNING!! ' + name + ' found zero shift.   ' +\
+                      'average shift = %s' %str(avg_shift)
+
+ 
+            if axis2_shift >= 0:
+                if axis2_shift == 0: axis2_shift = -fitspad.shape[0]
+                if axis1_shift >= 0:
+                    if axis1_shift == 0: axis1_shift = -fitspad.shape[1]
+                    stack[axis2_shift:,axis1_shift:] += w*fitspad[:-axis2_shift,:-axis1_shift]
+                else: #axis1_shift < 0
+                    stack[axis2_shift:,:-abs(axis1_shift)] += w*fitspad[:-axis2_shift,abs(axis1_shift):]
+            else: #axis2_shift < 0
+                if axis1_shift >= 0:
+                    if axis1_shift == 0: axis1_shift = -fitspad.shape[1]
+                    stack[:-abs(axis2_shift),axis1_shift:] += w*fitspad[abs(axis2_shift):,:-axis1_shift]
+                else: #axis1_shift < 0
+                    stack[:-abs(axis2_shift),:-abs(axis1_shift)] += w*fitspad[abs(axis2_shift):,abs(axis1_shift):]
+
+        exposure +=w*hd['exp']
+        
+        if k+1 in coff:
+            a =  k+1/sum(weights[:k+1])
+#            a =  coff/sum(weights[:k])
+            print a
+            writefitsout(header, exposure*a, pc[pcn], hd, outfiles[pcn], stack*a, imdef)
+            pcn+=1
+
+	#raw_input()
+    
+def stackonbright(coff, luckies, hd, pc, mcoff, weights, header, imdef, outfiles,inpath):    
+    rad=hd['rad']
+    gsx,gsy=hd['gsx'],hd['gsy']
+    dx,dy=rad,rad
+
+    try: masterdata = PF.getdata(inpath+'/'+luckies[0][0])
+    except:
+        print """Cannot find image %s\nAborting...""" %('/'+luckies[0][0])
+        return -1    
+    pcn=0
+    exposure = 0.0
+    _PAD_ = 50
+    
+    stack = pad(drizzle(masterdata,0), _PAD_)
+    
+    if imdef['imtype']=='CONSEC':
+        luckies=sorted(luckies,key=lambda list:list[0] ,reverse=False)
+
+
+    mcoff = min (mcoff,len(luckies))
+    for k in xrange(mcoff):
+        if select == 'weighted':
+            w=weights[k]
+        else:
+            w=1.0
+
+            if DEBUG: print 'Running %d/%d...' %(k, mcoff-1)
+            name=luckies[k][0]
+            tmp=PF.getdata(inpath+'/'+name)
+            
+            fitspad = pad(drizzle(tmp,0),_PAD_)
+            if DEBUG:
+                figure()
+                imshow(fitspad)
+                show()
+            if imdef['follow']=='dynamic': #TO BE CHECKED
+                dx=_PAD_+2*(luckies[k][4]-gsx+luckies[k][1])
+                dy=_PAD_+2*(luckies[k][5]-gsy+luckies[k][2])
+                x=luckies[k][4]-rad+luckies[k][1]
+                y=luckies[k][5]-rad+luckies[k][2]
+            else:
+                dy=luckies[k][1]-luckies[0][1]
+                dx=luckies[k][2]-luckies[0][2]
+                #            x=gsx-rad+luckies[k][1]
+                #            y=gsy-rad+luckies[k][2]
+
+            add2stack(dx,dy,stack,fitspad, w)
+            exposure +=w*hd['exp']
+
+
+        if k+1 in coff:
+            a =  k+1/sum(weights[:k+1])
+
+            print outfiles[pcn]
+            writefitsout(header, exposure*a, pc[pcn],hd, outfiles[pcn], stack*a, imdef)
+            pcn+=1
+
+#######################################################################
+def createstack(inpath,gsx,gsy,rad,select,pc,shift,detrip,minsep,outpath,coresz,follow,ps, saturation, fast):
+
+    print "searching for files in %s"%inpath
+
+    
+    files = sorted([x for x in os.listdir(inpath) if x.endswith('.fits')])
+    nfiles=len(files)
+    print inpath
+##        crating percentages list   #####
+    if type(pc) is float or type(pc) is int:
+        pc = [pc]
+
+### caluclating corresponding number of images to stack   #####
+    cutoff = zeros(len(pc), float)
+    for i,c in enumerate(pc): 
+        cutoff[i] = int(c/100.0*nfiles)
+        if cutoff[i]==0:
+            cutoff[i]=1
+
+#####  reading in header parameters
+#    hd =  dict('hbin'=9.9e99,'vbin'=9.9e99,'exp'=9.9e99,'xsize'=9.9e99,'ysize'=9.9e99, 'filename'='', 'bp[0]y'=9.9e99, 'bp[1]'=9.9e99, 'psx'=9.9e99,'psy'=9.9e99,'gsx'=gsx,'gsy'=gsy, 'coresz'=coresz, 'minsep'=minsep,'saturation'=9.9e99)
+            
+    hd =  dict(gsx=gsx,gsy=gsy, coresz=coresz, minsep=minsep,saturation=saturation, rad=rad)
+
+    hd, header =preppars(files[0],inpath, hd)
+
+    if hd['gsx'] == 0:
+        hd['gsx'] = int(hd['xsize']/2)
+    if hd['gsy'] == 0:
+        hd['gsy'] = int(hd['ysize']/2)
+
+    if hd == -1:
+        return -1
+    outname=hd['filename']        
+##setting centroid for brightest pixel search####
+#value in pixel of 2''*2'' to contain centroid update within 2'' , x and y
+    hd['psx'] = 2.0/(ps*hd['hbin'])
+    hd['psy'] = 2.0/(ps*hd['vbin'])
+    hd['psxsq']=hd['psx']*hd['psx']
+    hd['psysq']=hd['psy']*hd['psy']
+
+#setting selet par
+    imdef=dict(align='UNALIGN', imtype='', follow=follow, detrip='NONE')
+
+    if shift == 'align':
+        imdef['align']='ALIGN'
+    if select=='lucky':
+        imdef['imtype']='LUCKY'
+        if shift == 'none':
+            print """Will not perform lucky imaging without aligning frames
+                 Changing parameter 'shift' to '1'"""
+            shift = 'align'
+            align='ALIGN'
+            imdef['align']='ALIGN'
+    elif select == 'coadded':
+        imdef['imtype']='CONSEC'
+    elif select == 'weighted':
+        imdef['imtype']='WEIGHTED_TIPTILT'
+        if shift == 'none':
+            print """Will not perform weighted tip/tilt imaging without 
+                 aligningframes
+                 Changing parametes 'shift' to '1'"""
+            shift = 'align'
+            align='ALIGN'
+            imdef['align']='ALIGN'
+    elif select == 'corr' or select == 'correlate':
+	imdef['imtype']='LUCKY_CORRELATED'
+        if shift == 'none':
+            print """Will not perform lucky imaging without aligning frames
+                 Changing parametes 'shift' to '1'"""
+            shift = 'align'
+            align='ALIGN'
+            imdef['align']='ALIGN'
+    else:
+        print "invalid 'select' paramter (%s): use 'coadded' for standard stacking, 'lucky' for lucky, 'weighted' for weighted average exposures, 'corr' for lucky with phase correlation"%select
+        return -1  
+    
+################creating name files that will be useful later
+    outfiles=[]
+    if detrip == 'v' or detrip == 'h':
+        for p in pc:
+            outfiles.append(outpath+'/'+outname+'_%3.2f_%s_%s_%s_d%s.fits' % (float(p),imdef['imtype'],imdef['align'],imdef['follow'], imdef['detrip']))
+    else:
+        for p in pc:
+            outfiles.append(outpath+'/'+outname+'_%3.2f_%s_%s_%s.fits' % (float(p),imdef['imtype'],imdef['align'],imdef['follow']))
+
+    histfile = outpath+'/'+outname+'_'+imdef['follow']+'.hist.png' 
+    listfilename = '%s/strehl_list_%s_%d_%d_%d.dat' %(outpath,imdef['follow'], gsx, gsy, rad)
+    #listfilename = '%s/strehl_list_%s.dat' %(outpath,imdef['follow'])
+    
+    if DEBUG:
+        print """DEBUG
+
+
+              pritning parameters
+
+
+              """
+        #print prnDict(hd)
+        #print prnDict(imdef)
+
+################selecting best frames####################
+    best, nrejected=orderbystrehl(imdef, files, listfilename, hd, inpath)
+
+    mcoff=int(max(cutoff))
+    if mcoff > nfiles-nrejected: 
+        mcoff=nfiles-nrejected
+    print "maximum cutoff", mcoff
+    luckies=best[:mcoff]
+    exposure =  0.0
+    print '%d images selected (or less).' % mcoff
+    sys.stdout.flush()
+
+#########creating weights as AS^2.4 according to Robert Tubbs### TO BE CHECKED
+    if imdef['imtype'] !='CONSEC' and select == 'weighted':
+        weights = array(zip(*luckies)[3])
+        strehlnorm = 0.3/weights[0]
+        weights = pow(weights*strehlnorm,2.4)
+    else:
+        weights=ones(len(luckies),float)
+    createhist(histfile,best)
+
+###########detripling    TO BE CHECKED
+    if detrip!='none':
+        luckies,imdef['detrip'] = detripling(detrip, luckies,mcoff,hd)
+        
+#####     ALIGNMENT AND STACKING     #####
+                            
+    print """""
+
+
+Compiling Lucky Image...
+
+
+"""
+    sys.stdout.flush()
+    if select=='corr' or select=='correlate':
+        print 'Using phase correlation...'
+        print '\nmaximum length of fits list: %d' %mcoff
+        print 'masterfits: %s' %luckies[0][0]
+        corrcoadd(luckies, inpath, cutoff, header, pc, hd, outfiles, weights, imdef, fast)
+
+
+    else:  
+        print 'Using brightest pixel to align...'
+        print '\nmaximum length of fits list: %d' %mcoff
+        print 'masterfits: %s' %luckies[0][0]
+        stackonbright(cutoff, luckies, hd, pc, mcoff, weights, header, imdef, outfiles, inpath) 
+
+
+    return 1
+
+
+########################################################
+########################################################
+########################################################
+########################################################
+    
+
+if __name__ == '__main__':
+    import optparse
+
+    parser = optparse.OptionParser(usage='makelucky.py -c configfilename', conflict_handler="resolve")
+
+    parser.add_option('-c','--configfile' , type="string",
+                      help='full name to configuration file')
+    parser.add_option('--debug', default=False, action="store_true",
+                      help='debug')
+    
+    options,  args = parser.parse_args()
+
+    if len(args)>0 or options.configfile == None:
+        sys.argv.append('--help')
+        options,  args = parser.parse_args() 
+
+        print """Usage. Requires: 
+                **name of parameter file conatining :**
+		
+                Directory containing images
+		dark file
+		dark method
+		Guide star x coordinate
+		Guide star y coordinate
+		region dimensions x
+		percentage of images to be selected (0-100)
+		lucky: \'lucky\',\'weighted\', \'coadded\', \'corr\' 
+		shift: \'align\' or \'none\'
+                detripling: \'v\' or \'h\' or \'none\'
+                minimum separation or cores
+                core size for detripling (odd integer)
+                dynamic guide region; 1 or 0
+                saturation
+		fftw3: \'y\' to use PyFFTW3 package, \
+		       \'n\' to use normal SciPy FFTpack
+            """
+        sys.exit()
+
+    if options.debug:
+        DEBUG=True
+
+#####     DECLARE VARIABLES     #####
+    pars = readconfig(options.configfile)
+    gsx=pars['x']
+    gsy=pars['y']
+    rad=pars['r']
+    select=pars['sel']
+    pc = pars['percent']
+    ps = pars['ps']
+    shift=pars['align']
+    detrip=pars['detrip']
+    minsep=float(pars['separation'])
+    coresz=pars['core']
+    follow=pars['centroid']
+    saturation=float(pars['saturation'])
+
+    fast = pars['fftw3'].startswith('y')
+
+    nameroot=pars['spool'][0]
+    if nameroot.endswith('.fits'):
+        nameroot = nameroot[:-5]
+    print nameroot
+    if len(pars['spool'])>1:	
+	outpath = '%s/%s_all'%(mygetenv('SPEEDYOUT'),nameroot)
+    else:
+        outpath = '%s/%s'%(mygetenv('SPEEDYOUT'),nameroot)
+    #inpath='%s/unspooled/' %(outpath)
+    inpath='/science/fbianco/LIdata/%s/unspooled'%(nameroot)
+    
+    if len(select[0]) == 1:
+        print "\nprocessing %s\n\n\n"%select
+	ret = createstack(inpath,gsx,gsy,rad,select,pc,shift,detrip,minsep,outpath,coresz,follow,ps, saturation, fast)
+    else:
+        for sel in select:
+            createstack(inpath,gsx,gsy,rad,sel,pc,shift,detrip,minsep,outpath,coresz,follow,ps, saturation, fast)

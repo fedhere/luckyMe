@@ -1,0 +1,449 @@
+##########python routine to automatically start the processing of LIHSP LI data
+##################################################
+############creted by federica bianco
+############july 2011
+#################################################
+########assumes LucaR data (to be changed, header keywords for iXon888 need adjusting)
+########assumes name convention r_d_yyyymmdd(_N).fits for darks
+########assumes name convention r_e_yyyymmdd_targetname(_N)(_X).fits for science data
+########assumes darks are taken on the same night. if no darks from the same night are available no dark subtraction will be performed
+########will process all spool taken under the same condition and on the same target together, if you move your centroid suddendly between spools you are likely to have a problem!
+######################################
+#######requires environmantal variables:
+##############SPEEDYIN for directory contain directory of data named yyyymmdd (date of the beginning of the night data was taken)
+##############SPEEDYOUT for directory to contain directory of processed data
+
+
+import sys,os
+import pyfits as PF
+import datetime
+#import MySQLdb
+from myutils import mygetenv, mymkdir
+from unspool import unspoolit
+from operator import itemgetter
+from numpy import loadtxt,array
+
+import subprocess
+sys.path.append("/nethome/fbianco/LIHSP/LIpipe")
+
+from weightedstack import createstack
+
+PIXSCALE=0.13 #''/pixel
+
+indir=mygetenv('SPEEDYIN')
+outdir=mygetenv('SPEEDYOUT')
+
+USEHEADERTRGT=0
+USECENTER=0
+ROTANGLE=0   #rotation angle in degrees (needed for proper de-tripling)
+
+def file_len(fname):
+    p = subprocess.Popen(['wc', '-l', fname], stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    result, err = p.communicate()
+    if p.returncode != 0:
+        raise IOError(err)
+    return int(result.strip().split()[0])
+
+##############read config default
+
+
+#############connect to db
+
+#try:
+#    conn = MySQLdb.connect (host = "localhost",
+#                            user = "lihspuser",
+#                            passwd = "lihsppass",
+#                            db = "lihspdata")
+#except MySQLdb.Error, e:
+#    print "Error %d: %s" % (e.args[0], e.args[1])
+#    sys.exit (1)
+
+#cursor = conn.cursor ()
+#cursor.execute ("SELECT VERSION()")
+#row = cursor.fetchone ()
+#print "server version:", row[0]
+#cursor.close ()
+#conn.close ()
+
+
+##############take last night's date
+
+
+yesterday = datetime.date.today() - datetime.timedelta( 4,0,0)
+date = yesterday.strftime("%Y%m%d")
+
+print "#Searching for data to process collected on ",date,
+inpath = indir+'/'+date+'/'
+print " in", inpath
+##############look for data and read header
+
+cadences=[]
+gains=[]
+binnings=[]
+axes=[]
+targets=[]
+ras=[]
+decs=[]
+
+exps = []
+explist = sorted([x for x in os.listdir(inpath) if x.endswith('.fits') and x.startswith('q_e')])
+for f in explist: 
+
+    print "\n\n#READING FILE: ",f
+    
+    if USEHEADERTRGT==0:
+        
+        tname = f.split('_')[3].strip('.')
+        if tname.endswith('.fits'):
+            tname = tname[:-5]
+        ras='00:00:00'
+        decs='00:00:00'
+
+
+    print "\n\n#READING IMAGE ",f
+    try: 
+        image=PF.open(inpath+'/'+f)
+        header=image[0].header
+    except:
+        print "#ERROR: this fits may be messed up"
+        continue 
+
+    image.close()
+    
+   ###########parse header#############
+    nax=int(header['NAXIS'])
+    if nax != 3:
+        print "#not a 3d fits, moving on..."
+        continue
+
+    xsize=int(header['NAXIS1'])
+    ysize=int(header['NAXIS2'])
+    length=header['NAXIS3']
+    if length == 1:
+        print "#single image, moving on..."
+        continue
+
+    axes.append((xsize,ysize))
+
+    if  'HBIN' in header:
+        hbin =float(header['HBIN'])
+        vbin =float(header['VBIN'])
+    elif 'CCDXBIN' in header:
+        hbin =float(header['CCDXBIN'])
+        vbin =float(header['CCDYBIN'])
+
+    binnings.append((hbin,vbin))
+
+    if 'EXPOSURE' in header:
+        exp =  (header['EXPOSURE'])
+        if 'GAIN' not in header:
+            print "#ERROR: no gain keyword: moving on.."
+            continue
+        else:
+            gain = int(header['GAIN'])
+    elif 'EXPTIME' in header:
+        exp =  (header['EXPTIME'])
+        if 'GAINMULT' not in header:
+            print "#ERROR: no gain keyword: moving on.."            
+            continue
+        else:
+            gain = int(header['GAINMULT'])
+
+    gains.append(gain)
+
+    if 'KCT' in header:
+      cadence = 1.0/float(header['KCT'])
+    elif 'FRMINTVL' in header:
+      cadence = 1.0/float(header['FRMINTVL'])
+    else: 
+        exposure = float(exp)
+        cadence = 1.0/exposure
+
+    print "#cadence: ",cadence
+    cadences.append(cadence)
+        
+    if 'ACQMODE' in header:
+        if 'Frame Transfer' not in header['ACQMODE'] :
+            continue
+        else: pass
+    
+    if USEHEADERTRGT==1:
+        tname = header['OBJECT']
+        targets.append(tname)
+        tra = header['CAT-RA']
+        tdec = header['CAT-DEC']
+        rashere=tra.replace(' ','')
+        ras.append(rashere)
+        dechere=tdec.replace(' ','')
+        decs.append(dechere)
+        print tname, tra, tdec
+      ###########this will have to be updated for iXon 888's
+    
+    exps.append({'name':f, 'target':tname, 'cadence':cadence ,'gain':gain, 'bins':(hbin,vbin), 'axs':(xsize,ysize), 'ra':rashere, 'dec':dechere})
+
+
+#remove duplicate parameters from parameter lists
+cadences=list(set(cadences))
+gains=list(set(gains))
+binnings=list(set(binnings))
+axes=list(set(axes))
+targets=list(set(targets))
+ras=list(set(ras))
+decs=list(set(decs))
+
+##############look for darks and read headers
+
+darks = []
+darklist = sorted([x for x in os.listdir(inpath) if x.endswith('.fits') and x.startswith('q_d')])
+
+for f in darklist: 
+
+    print "\n\n#READING DARK ",f
+    try: 
+        image=PF.open(inpath+'/'+f)
+        header=image[0].header
+    except:
+        print "#ERROR: this fits may be messed up"
+        continue 
+
+    image.close()
+    
+   ###########parse header#############
+    
+    nax=int(header['NAXIS'])
+    if nax != 3:
+        continue
+
+    xsize=header['NAXIS1']
+    ysize=header['NAXIS2']
+    length=header['NAXIS3']
+    if length == 1:
+        print "single image, moving on..."
+        continue
+    
+    if  'HBIN' in header:
+        hbin =float(header['HBIN'])
+        vbin =float(header['VBIN'])
+    elif 'CCDXBIN' in header:
+        hbin =float(header['CCDXBIN'])
+        vbin =float(header['CCDYBIN'])
+
+    if 'EXPOSURE' in header:
+        exp =  (header['EXPOSURE'])
+        if 'GAIN' not in header:
+            print "#ERROR: no gain keyword: moving on.."
+            continue
+        else:
+            gain = int(header['GAIN'])
+    elif 'EXPTIME' in header:
+        exp =  (header['EXPTIME'])
+        if 'GAINMULT' not in header:
+            print "#ERROR: no gain keyword: moving on.."
+            continue
+        else:
+            gain = int(header['GAINMULT'])
+
+    if 'KCT' in header:
+      cadence = 1.0/float(header['KCT'])
+    elif 'FRMINTVL' in header:
+      cadence = 1.0/float(header['FRMINTVL'])
+    else: 
+      exposure = float(header['EXPTIME'])
+      cadence = 1.0/exposure
+      
+    print "#cadence: ",cadence
+
+    if 'ACQMODE' in header:
+        if 'Frame Transfer' not in header['ACQMODE'] :
+            continue
+    	else: 
+            pass
+
+
+    
+      ###########this will have to be updated for iXon 888's
+
+    darks.append({'name':f, 'target':'dark', 'cadence':cadence ,'gain':gain, 'bins':(hbin,vbin), 'axs':(xsize,ysize), 'length':length})
+
+
+##############match data+darks
+##create an array of cadences
+##create an array of gains
+##create an array of binnings
+##create an array of targets
+
+
+############## unspool/undark data
+
+heredir=outdir+'/darks/'
+if mymkdir(heredir)!= 0:
+    sys.exit()
+#    strg = "mkdir mygetenv('SPEEDYOUT')//darks"
+#    os.system(strg)
+
+for h in cadences:
+    for g in gains:
+        for b in binnings:
+            psx = 2.0/(PIXSCALE*b[0])
+            psy = 2.0/(PIXSCALE*b[1])
+            for ax in axes:
+                
+                dodarks = [2]
+#                print h,g,b,ax
+                ##selecting darks with appropriate parameters
+#                print where(darks['cadence']== h and darks['gain']== g and darks['bins']== b  and darks['axs']== ax)[0]
+
+		#print darks
+                try: 
+                    dkhere = sorted([s for s in darks if (s.get('cadence')==h and s.get('gain')==g and s.get('axs')==ax and s.get('bins')==b and s.get('gain')==g)],key=itemgetter('length'))[-1]
+                    print "here ", dkhere
+                except:
+                    print "\n\n#ERROR: no darks, reducing without removing darks"
+                    dkhere={'name':''}
+                    dodarks = [0]
+                ####this chose the longest dark with appropriate parameters
+                    
+                for tg in targets:
+                    for r in ras:
+                        for d in decs:
+#                    print '%s'%outdir
+#                    print '%s'%tg
+#                    print '%.2f'%h
+#                    print '%d'%g
+#                    print '%d'%b[0]
+#                    print '%d'%ax[0]
+
+#                for i in range(1,len(par['spool'])):
+#                      allfiles=exps[where(exps['cadence']== h and exps['gain']== g and exps['bins']== b and exps['axs']== ax and exps['target'] == tg)[0]]
+                            print exps
+                            expshere = [s for s in exps if (s.get('cadence')==h and s.get('gain')==g and s.get('axs')==ax and s.get('bins')==b and s.get('gain')==g)]
+
+                            outpath = '%s/%s_%.2f_%d_%dx%d_%dx%d_%s_%s'%(outdir,tg,h,g,b[0],b[1],ax[0],ax[1],r.replace(':',''),d.replace(':',''))
+                            if mymkdir(outpath)!= 0:
+                                sys.exit()
+                            unspooledpath=outpath+'/unspooled/'
+                            if mymkdir(unspooledpath)!= 0:
+                                sys.exit()
+                        
+
+                            print "\n\n##PROCESSING EXPOSURES: ",expshere, "\n\n"
+                            imgshere=[s['name'] for s in expshere]
+
+                            for i,f in enumerate(imgshere):
+                                print "\n\n##PROCESSING EXPOSURES: ",f, "\n\n"
+
+                                outpath = '%s/%s_%.2f_%d_%dx%d_%dx%d_%s_%s'%(outdir,tg,h,g,b[0],b[1],ax[0],ax[1],r.replace(':',''),d.replace(':',''))
+                                print outpath
+
+
+
+                                if mymkdir(outpath)!= 0:
+                                    sys.exit()
+                                unspooledpath=outpath+'/unspooled/'
+                                if mymkdir(unspooledpath)!= 0:
+                                    sys.exit()
+
+                                if dodarks[0]== 1 or dodarks[0] == 0:
+                                    dodarks.append(dodarks[0])
+                                else:
+                                    dodarks.append(3)
+                                fname = '%s/%s'%(inpath,  f)
+                                if os.path.isfile(fname):
+                                    ret=0
+				    ret = unspoolit(inpath, f, inpath, dkhere['name'],'avg', dodarks[i], heredir,outpath,ROTANGLE)
+                                    if ret !=1:
+                                        print "\n\n\n!!!!!!!!!!!!!!!PANIC: unspooling failed. on %s!!!!!!!!!!!\n\n\n"%fname
+                                        continue
+                                else: 
+                                    print '\n\n#ERROR: no spool %s to be found'%fname
+                                    continue
+                                
+                                
+###of there are no images to process...
+                            if len(imgshere)<=0:
+                                continue
+##############calculate 5sec exposure
+                            if USECENTER==0:
+                                nstack=5.0/exp
+                                imglist=sorted([x for x in os.listdir(unspooledpath) if x.endswith('.fits')])
+                                #                            print imglist
+                                
+                                if len(imglist) == 0:
+                                    continue
+                                pc = nstack/len(imglist)*100.0
+
+##############stack 5 sec of images
+                                createstack(unspooledpath,0,0,1,'coadded',pc,'unalign','none',0,outpath,0,'static',2.0)
+
+##############run sextractor
+                                outfile=outpath+'/'+imglist[0][:-9].replace('.fits','')+'_%3.2f_%s_%s_%s.fits' % (float(pc),'CONSEC','UNALIGN','static')
+                                print '############sextracting ',outfile
+                                dma =10
+                                dt = 10
+                                nstars = 1000
+                                print '#extracting sources into ',outpath+'/sex.cat'
+                                while (nstars>5 and dt <100 and dma < 50):
+
+                                    command = 'sex -c /home/eng/LIHSPcommon/default.sex %s -CATALOG_NAME %s -DETECT_MINAREA %d -DETECT_THRESH %d'%(outfile,outpath+'/sex.cat', dma, dt)
+                                    print "#running sextractor command", command
+                                    try:
+                                        p = subprocess.Popen(command, shell=True,stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
+                                        (_out_err, _in) = (p.stdout, p.stdin)
+                                        print _out_err
+                                        versionline = _out_err.read()
+                                        if (versionline.find("SExtractor") != -1):
+                                            nstars =  file_len(outpath+'/sex.cat')-16
+                                            dt = dt+5
+                                            dma - dma+5
+                                        else:
+                                            print "\n\n#ERROR running sextractor: %s"%(_out_err)
+                                            nstars = 0
+                                            continue
+                                    except IOError:
+                                        nstars = 0
+                                        continue
+                                if os.path.isfile(outpath+'/sex.cat'):
+                                    tmp=loadtxt(outpath+'/sex.cat', skiprows=16)
+                                else:
+                                    print "\n\n#ERROR: sextractor run must have failed. no ",outpath+"/sex.cat"
+                                    continue
+                                #print int(max(psx,psy))*2
+##############choose target coordinates and reduce!
+                                radius = int(max(psx,psy))*2
+                                #radius = 5
+                                if len(tmp.shape)>1:
+                                    stars = array([tmp[:,1],tmp[:,2],(tmp[:,1]-ax[0])**2+(tmp[:,2]-ax[1])**2]).transpose()
+                                    i = stars[:,2].argsort()
+                                    stars=stars[i]
+                                    
+                                    #createstack(unspooledpath,stars[0,0]/2-6,stars[0,1]/2-6,radius,'lucky',[0.25,0.5,1,3,5,10,50],'align','none',0,outpath,0,'dynamic',PIXSCALE)
+                                    createstack(unspooledpath,stars[1,0]/2-6,stars[1,1]/2-6,60,'lucky',[0.25,0.5,1,3,5,10,50],'align','none',0,outpath,0,'static',PIXSCALE)
+                                else:
+                                    stars=[tmp[1],tmp[2]]
+                                    try:
+                                        
+                                        #createstack(unspooledpath,stars[0]/2-6,stars[1]/2-6,radius,'lucky',[0.25,0.5,1,3,5,10,50],'align','none',0,outpath,0,'dynamic',PIXSCALE)
+                                        createstack(unspooledpath,stars[0]/2-6,stars[1]/2-6,60,'lucky',[0.25,0.5,1,3,5,10,50],'align','none',0,outpath,0,'static',PIXSCALE)
+                                    except:
+                                        pass
+                                    
+                                    
+
+
+                            else:
+                                try:
+                                    #createstack(unspooledpath,0,0,radius,'lucky',[0.25,0.5,1,3,5,10,50],'align','none',0,outpath,0,'dynamic',PIXSCALE)
+                                    createstack(unspooledpath,0,0,60,'lucky',[0.25,0.5,1,3,5,10,50],'align','none',0,outpath,0,'static',PIXSCALE)
+                                except:
+                                    pass
+                                
+                                
+                            dodarks=[3]
+#                    print stars[0,0]/2-6,stars[0,1]/2-6
+#                    print max(psx,psy)*2
+
+##############reduce!!
+
+
+
+

@@ -1,0 +1,38 @@
+{'imdir' : '.',\
+'separation' : 8,\
+'core' : 3,\
+'profile' : 'm',\
+'alpha' : 1.4,\
+'beta' : 3.0,\
+'nsteps' : 100,\
+'disp' : 'y',\
+'notes':'',\
+'impath' : '/science/fbianco/LIdata/tmp-q_e_20110822_70_1_1_0_all',\
+'dodark' : 3,\
+'dark' : '',\
+'spool' :['tmp-q_e_20110822_70_1_1_0_all'],\
+'x' : 104,\
+'y' : 103,\
+'outpath' : '.',\
+'r' : 30,\
+'sel' : ['lucky','corr'],\
+'percent' :  [0.1,0.2,0.5,1,2,3,4,5,10,20,30,50],\
+'psf' : 1.3,\
+'ps' : 0.2,\
+'centroid' : 'static',\
+'ra' : '00',\
+'dec' : '00',\
+'scope' : 'FTN',\
+'camera' : 'iXon888',\
+'nskip' : 0,\
+'unspool' : 'n',\
+'reduce' : 'y',\
+'centan' : 'n',\
+'align' : 'align',\
+'detrip' : 'none',\
+'saturation' : '1.6e4',\
+'fftw3' : 'n',\
+'flatten': 'n',\
+'flats' : ['']\
+}
+

@@ -1,0 +1,162 @@
+from os import path,system, getenv
+import sys,os,time
+import pyfits as PF
+from scipy import linspace
+
+def createhist(histfile, best):
+    from pylab import hist, figure, xlabel, ylabel, savefig, axvline
+    from numpy import resize, diff
+###########CREATING HISTOGRAM##################
+    if os.path.isfile(histfile) != 1:
+        
+        bins = linspace(best[-1][3],best[0][3],50)
+        
+        strehl=[i[3] for i in best]
+        events, edges, patches = hist(strehl,bins, normed=False)
+        
+        lower = resize(edges, len(edges)-1)
+        binmid =  lower + 0.5*diff(edges)
+        
+        lenbins=len(bins)-2
+        allevents = sum(events)
+        nevents = 0
+        xsaved = 0
+        for i in range(lenbins):
+            nevents +=events[lenbins-i]
+            if nevents>allevents/100.0 and xsaved == 0:
+                xsaved = binmid[lenbins-i]
+                
+        xlabel('counts')
+        ylabel('frequency')
+        axvline (xsaved)
+        savefig(histfile,dpi=None, facecolor='w', edgecolor='w',
+                orientation='portrait', papertype=None, format=None,
+                transparent=False, bbox_inches=None, pad_inches=0.1)
+        #    show()
+        #    sys.exit()
+     
+
+def printreg(name,follow,inpath, best ,rad, bp,color):
+    best = best[0]
+    regfile = '%s/../%s_%s.reg' %(inpath,name,follow)
+    print "\n\n printing region file for fits ", name,"to ",regfile,"\n\n"
+    regf = open(regfile,"w")
+
+    print >> regf, 'global color=',color,' dashlist=8 3 width=1 font="helvetica 10 normal" select=1 highlite=1 dash=0 fixed=0 edit=1 move=1 delete=1 include=1 source=1'
+    print >>regf, "physical"
+    print >> regf, "box(",(best[1][0])+bp[0]-rad+1,",",(best[2][0])+bp[1]-rad+1,",",2*rad+1,",",2*rad+1,",0)"
+    print >> regf,"circle(",best[1][0]+int(bp[0])-rad+1, ",",best[2][0]+int(bp[1])-rad+1,",1)"
+    print >> regf,"circle(",best[6],",",best[7]+1,",1) # color=red"
+    regf.close()
+
+def  writefitsout(header, exposure,  pc,  hd, outfile, stack, imdef):
+####     UPDATE HEADER     #####
+    if 'EXPOSURE' in header: header['EXPOSURE']=exposure
+    elif 'EXPTIME' in header: header['EXPTIME']=exposure
+    header.update('IMAGTYPE', '%s' % imdef['imtype'], 'Consecutive, Lucky, Weighted, or Lucky_Correlated')
+    header.update('SELECTED', '%s' % pc, 'Percentage of images selected')
+    header.update('IMGALIGN', '%s' % imdef['align'], 'Image realignment around guide star')
+    header.update('DETRIP', '%s' % imdef['detrip'], 'Axis of detripling')
+    if imdef['detrip']!='NONE':
+        header.update('DETRCORE', '%s' % hd['coresz'], 'Size of detripling core')
+        header.update('DETRSEP', '%s' % hd['minsep'], 'Minimum core separation')
+    else:
+        header.update('DETRCORE', '0', 'Size of detripling core')
+        header.update('DETRSEP', '0', 'Minimum core separation')
+    header.update('ALIGNCX', '%d' %hd['gsx'], 'x-pixel initial centroid')
+    header.update('ALIGNCY', '%d' %hd['gsy'], 'y-pixel initial centroid')
+    header.update('ALIGNR', '%d' %hd['rad'], 'search region radius')
+    header.update('CENTROID', '%s' %imdef['follow'], 'Dynamic or static centroid')
+    header.update('CENTROID', '%s' %imdef['follow'], 'Dynamic or static centroid')
+#    print header
+
+    #####     WRITE OUT    #####
+    
+    PF.writeto(outfile, stack, header, clobber=True)
+        
+    print 'Composite image written to %s' %  outfile
+#        strg ='chmod 777 '+outpath+'/'+outname+'/*'
+#        os.system(strg)
+
+
+
+def prnDict(aDict, br='\n', html=0,
+            keyAlign='l',   sortKey=1,
+            keyPrefix='',   keySuffix='',
+            valuePrefix='', valueSuffix='',
+            leftMargin=0,   indent=1 ):
+    '''
+
+return a string representive of aDict in the following format:
+    {
+     key1: value1,
+     key2: value2,
+     ...
+     }
+
+Spaces will be added to the keys to make them have same width.
+
+sortKey: set to 1 if want keys sorted;
+keyAlign: either 'l' or 'r', for left, right align, respectively.
+keyPrefix, keySuffix, valuePrefix, valueSuffix: The prefix and
+   suffix to wrap the keys or values. Good for formatting them
+   for html document(for example, keyPrefix='<b>', keySuffix='</b>'). 
+   Note: The keys will be padded with spaces to have them
+         equally-wide. The pre- and suffix will be added OUTSIDE
+         the entire width.
+html: if set to 1, all spaces will be replaced with '&nbsp;', and
+      the entire output will be wrapped with '<code>' and '</code>'.
+br: determine the carriage return. If html, it is suggested to set
+    br to '<br>'. If you want the html source code eazy to read,
+    set br to '<br>\n'
+
+version: 04b52
+author : Runsun Pan
+require: odict() # an ordered dict, if you want the keys sorted.
+         Dave Benjamin 
+         http://aspn.activestate.com/ASPN/Cookbook/Python/Recipe/161403
+    '''
+   
+    if aDict:
+
+        #------------------------------ sort key
+        if sortKey:
+            dic = aDict.copy()
+            keys = dic.keys()
+            keys.sort()
+#            aDict = odict()
+            for k in keys:
+                aDict[k] = dic[k]
+            
+        #------------------- wrap keys with ' ' (quotes) if str
+        tmp = ['{']
+        ks = [type(x)==str and "'%s'"%x or x for x in aDict.keys()]
+
+        #------------------- wrap values with ' ' (quotes) if str
+        vs = [type(x)==str and "'%s'"%x or x for x in aDict.values()] 
+
+        maxKeyLen = max([len(str(x)) for x in ks])
+
+        for i in range(len(ks)):
+
+            #-------------------------- Adjust key width
+            k = {1            : str(ks[i]).ljust(maxKeyLen),
+                 keyAlign=='r': str(ks[i]).rjust(maxKeyLen) }[1]
+            
+            v = vs[i]        
+            tmp.append(' '* indent+ '%s%s%s:%s%s%s,' %(
+                        keyPrefix, k, keySuffix,
+                        valuePrefix,v,valueSuffix))
+
+        tmp[-1] = tmp[-1][:-1] # remove the ',' in the last item
+        tmp.append('}')
+
+        if leftMargin:
+          tmp = [ ' '*leftMargin + x for x in tmp ]
+          
+        if html:
+            return '<code>%s</code>' %br.join(tmp).replace(' ','&nbsp;')
+        else:
+            return br.join(tmp)     
+    else:
+        return '{}'
